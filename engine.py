@@ -535,3 +535,394 @@ def run_all(
     if hydrogen is not None:
         out['hydrogen'] = calc_hydrogen(general, hydrogen)
     return out
+
+
+# =========================================================================
+# MÓDULO DE COSTOS — CAPEX / OPEX / TCO
+# =========================================================================
+
+@dataclass
+class CostGeneralInputs:
+    """Parámetros financieros generales."""
+    horizonte_anios: int = 15
+    dias_operacion_anio: int = 365
+
+
+@dataclass
+class CostCapexDiesel:
+    vehiculo_eur: float = 250_000.0
+    infraestructura_deposito_eur_bus: float = 15_000.0
+
+
+@dataclass
+class CostCapexOvernight:
+    vehiculo_eur: float = 450_000.0
+    cargador_pistola_eur: float = 40_000.0
+    subestacion_electrica_eur: float = 200_000.0
+    infraestructura_deposito_eur_bus: float = 20_000.0
+
+
+@dataclass
+class CostCapexFlash:
+    vehiculo_eur: float = 500_000.0
+    cargador_pantografo_cabecera_eur: float = 350_000.0
+    cargador_pistola_patio_eur: float = 40_000.0
+    subestacion_electrica_eur: float = 300_000.0
+    infraestructura_deposito_eur_bus: float = 20_000.0
+
+
+@dataclass
+class CostCapexOpportunity:
+    vehiculo_eur: float = 480_000.0
+    cargador_oportunidad_cabecera_eur: float = 250_000.0
+    cargador_pistola_patio_eur: float = 40_000.0
+    subestacion_electrica_eur: float = 250_000.0
+    infraestructura_deposito_eur_bus: float = 20_000.0
+
+
+@dataclass
+class CostCapexHydrogen:
+    vehiculo_eur: float = 600_000.0
+    estacion_hidrogeno_eur: float = 1_500_000.0
+    infraestructura_deposito_eur_bus: float = 20_000.0
+
+
+@dataclass
+class CostOpexDiesel:
+    combustible_eur_litro: float = 1.50
+    mantenimiento_eur_km: float = 0.30
+
+
+@dataclass
+class CostOpexOvernight:
+    energia_eur_kwh: float = 0.12
+    mantenimiento_eur_km: float = 0.18
+    bateria_mantenimiento_anual_eur_bus: float = 2_000.0
+    bateria_reemplazo_eur: float = 80_000.0
+    bateria_vida_util_anios: int = 8
+
+
+@dataclass
+class CostOpexFlash:
+    energia_eur_kwh: float = 0.12
+    mantenimiento_eur_km: float = 0.18
+    bateria_mantenimiento_anual_eur_bus: float = 2_000.0
+    bateria_reemplazo_eur: float = 80_000.0
+    bateria_vida_util_anios: int = 8
+
+
+@dataclass
+class CostOpexOpportunity:
+    energia_eur_kwh: float = 0.12
+    mantenimiento_eur_km: float = 0.18
+    bateria_mantenimiento_anual_eur_bus: float = 2_000.0
+    bateria_reemplazo_eur: float = 80_000.0
+    bateria_vida_util_anios: int = 8
+
+
+@dataclass
+class CostOpexHydrogen:
+    hidrogeno_eur_kg: float = 6.00
+    mantenimiento_eur_km: float = 0.25
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Funciones de cálculo de costos
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def calc_capex_diesel(op: Dict[str, Any], c: CostCapexDiesel) -> Dict[str, Any]:
+    flota = op['flota_requerida']
+    vehiculos = flota * c.vehiculo_eur
+    deposito = flota * c.infraestructura_deposito_eur_bus
+    total = vehiculos + deposito
+    return {
+        'vehiculos': vehiculos,
+        'cargadores_cabecera': 0.0,
+        'cargadores_patio': 0.0,
+        'subestacion': 0.0,
+        'estacion_h2': 0.0,
+        'infra_deposito': deposito,
+        'total_capex': total,
+    }
+
+
+def calc_capex_overnight(op: Dict[str, Any], c: CostCapexOvernight) -> Dict[str, Any]:
+    flota = op['flota_requerida']
+    n_cargadores_patio = op.get('cargadores_patio', 0)
+    vehiculos = flota * c.vehiculo_eur
+    cargadores = n_cargadores_patio * c.cargador_pistola_eur
+    subestacion = c.subestacion_electrica_eur
+    deposito = flota * c.infraestructura_deposito_eur_bus
+    total = vehiculos + cargadores + subestacion + deposito
+    return {
+        'vehiculos': vehiculos,
+        'cargadores_cabecera': 0.0,
+        'cargadores_patio': cargadores,
+        'subestacion': subestacion,
+        'estacion_h2': 0.0,
+        'infra_deposito': deposito,
+        'total_capex': total,
+    }
+
+
+def calc_capex_flash(op: Dict[str, Any], c: CostCapexFlash) -> Dict[str, Any]:
+    flota = op['flota_requerida']
+    n_cab = op.get('n_cargadores_cabecera', 0)
+    n_patio = op.get('cargadores_patio', 0)
+    vehiculos = flota * c.vehiculo_eur
+    cargadores_cab = n_cab * c.cargador_pantografo_cabecera_eur
+    cargadores_pat = n_patio * c.cargador_pistola_patio_eur
+    subestacion = c.subestacion_electrica_eur
+    deposito = flota * c.infraestructura_deposito_eur_bus
+    total = vehiculos + cargadores_cab + cargadores_pat + subestacion + deposito
+    return {
+        'vehiculos': vehiculos,
+        'cargadores_cabecera': cargadores_cab,
+        'cargadores_patio': cargadores_pat,
+        'subestacion': subestacion,
+        'estacion_h2': 0.0,
+        'infra_deposito': deposito,
+        'total_capex': total,
+    }
+
+
+def calc_capex_opportunity(op: Dict[str, Any], c: CostCapexOpportunity) -> Dict[str, Any]:
+    flota = op['flota_requerida']
+    n_cab = op.get('n_cargadores_cabecera', 0)
+    n_patio = op.get('cargadores_patio', 0)
+    vehiculos = flota * c.vehiculo_eur
+    cargadores_cab = n_cab * c.cargador_oportunidad_cabecera_eur
+    cargadores_pat = n_patio * c.cargador_pistola_patio_eur
+    subestacion = c.subestacion_electrica_eur
+    deposito = flota * c.infraestructura_deposito_eur_bus
+    total = vehiculos + cargadores_cab + cargadores_pat + subestacion + deposito
+    return {
+        'vehiculos': vehiculos,
+        'cargadores_cabecera': cargadores_cab,
+        'cargadores_patio': cargadores_pat,
+        'subestacion': subestacion,
+        'estacion_h2': 0.0,
+        'infra_deposito': deposito,
+        'total_capex': total,
+    }
+
+
+def calc_capex_hydrogen(op: Dict[str, Any], c: CostCapexHydrogen) -> Dict[str, Any]:
+    flota = op['flota_requerida']
+    vehiculos = flota * c.vehiculo_eur
+    estacion = c.estacion_hidrogeno_eur
+    deposito = flota * c.infraestructura_deposito_eur_bus
+    total = vehiculos + estacion + deposito
+    return {
+        'vehiculos': vehiculos,
+        'cargadores_cabecera': 0.0,
+        'cargadores_patio': 0.0,
+        'subestacion': 0.0,
+        'estacion_h2': estacion,
+        'infra_deposito': deposito,
+        'total_capex': total,
+    }
+
+
+def calc_opex_anual_diesel(
+    op: Dict[str, Any], c: CostOpexDiesel, dias: int
+) -> Dict[str, Any]:
+    combustible_dia = op['combustible_total_l'] * c.combustible_eur_litro
+    mantenimiento_dia = op['km_totales_dia'] * c.mantenimiento_eur_km
+    combustible_anual = combustible_dia * dias
+    mantenimiento_anual = mantenimiento_dia * dias
+    total = combustible_anual + mantenimiento_anual
+    return {
+        'combustible_energia': combustible_anual,
+        'mantenimiento': mantenimiento_anual,
+        'bateria_anual': 0.0,
+        'total_opex_anual': total,
+    }
+
+
+def calc_opex_anual_overnight(
+    op: Dict[str, Any], c: CostOpexOvernight, dias: int
+) -> Dict[str, Any]:
+    flota = op['flota_requerida']
+    energia_dia = op.get('energia_total_patio_kwh', 0) * c.energia_eur_kwh
+    mantenimiento_dia = op['km_totales_dia'] * c.mantenimiento_eur_km
+    energia_anual = energia_dia * dias
+    mantenimiento_anual = mantenimiento_dia * dias
+    bateria_anual = flota * c.bateria_mantenimiento_anual_eur_bus
+    total = energia_anual + mantenimiento_anual + bateria_anual
+    return {
+        'combustible_energia': energia_anual,
+        'mantenimiento': mantenimiento_anual,
+        'bateria_anual': bateria_anual,
+        'total_opex_anual': total,
+    }
+
+
+def calc_opex_anual_flash(
+    op: Dict[str, Any], c: CostOpexFlash, dias: int
+) -> Dict[str, Any]:
+    flota = op['flota_requerida']
+    energia_dia = op.get('energia_total_dia_kwh', 0) * c.energia_eur_kwh
+    mantenimiento_dia = op['km_totales_dia'] * c.mantenimiento_eur_km
+    energia_anual = energia_dia * dias
+    mantenimiento_anual = mantenimiento_dia * dias
+    bateria_anual = flota * c.bateria_mantenimiento_anual_eur_bus
+    total = energia_anual + mantenimiento_anual + bateria_anual
+    return {
+        'combustible_energia': energia_anual,
+        'mantenimiento': mantenimiento_anual,
+        'bateria_anual': bateria_anual,
+        'total_opex_anual': total,
+    }
+
+
+def calc_opex_anual_opportunity(
+    op: Dict[str, Any], c: CostOpexOpportunity, dias: int
+) -> Dict[str, Any]:
+    flota = op['flota_requerida']
+    energia_dia = op.get('energia_total_dia_kwh', 0) * c.energia_eur_kwh
+    mantenimiento_dia = op['km_totales_dia'] * c.mantenimiento_eur_km
+    energia_anual = energia_dia * dias
+    mantenimiento_anual = mantenimiento_dia * dias
+    bateria_anual = flota * c.bateria_mantenimiento_anual_eur_bus
+    total = energia_anual + mantenimiento_anual + bateria_anual
+    return {
+        'combustible_energia': energia_anual,
+        'mantenimiento': mantenimiento_anual,
+        'bateria_anual': bateria_anual,
+        'total_opex_anual': total,
+    }
+
+
+def calc_opex_anual_hydrogen(
+    op: Dict[str, Any], c: CostOpexHydrogen, dias: int
+) -> Dict[str, Any]:
+    h2_dia = op['h2_total_kg'] * c.hidrogeno_eur_kg
+    mantenimiento_dia = op['km_totales_dia'] * c.mantenimiento_eur_km
+    h2_anual = h2_dia * dias
+    mantenimiento_anual = mantenimiento_dia * dias
+    total = h2_anual + mantenimiento_anual
+    return {
+        'combustible_energia': h2_anual,
+        'mantenimiento': mantenimiento_anual,
+        'bateria_anual': 0.0,
+        'total_opex_anual': total,
+    }
+
+
+def calc_tco(
+    capex: Dict[str, Any],
+    opex_anual: Dict[str, Any],
+    horizonte: int,
+    flota: int,
+    reemplazo_eur: float = 0.0,
+    vida_util_bat: int = 0,
+) -> Dict[str, Any]:
+    """Calcula el TCO año a año.
+
+    Retorna:
+        anual: lista de dicts con desglose por año (0 = CAPEX, 1..n = OPEX).
+        total_tco: suma total.
+    """
+    anual = []
+    acumulado = 0.0
+
+    for y in range(horizonte + 1):
+        entry: Dict[str, Any] = {'anio': y}
+        if y == 0:
+            entry['capex'] = capex['total_capex']
+            entry['opex'] = 0.0
+            entry['reemplazo_bateria'] = 0.0
+            entry['total_anio'] = capex['total_capex']
+        else:
+            entry['capex'] = 0.0
+            entry['opex'] = opex_anual['total_opex_anual']
+            # Reemplazo de batería en los años correspondientes
+            reemplazo = 0.0
+            if vida_util_bat > 0 and reemplazo_eur > 0 and y % vida_util_bat == 0 and y < horizonte:
+                reemplazo = flota * reemplazo_eur
+            entry['reemplazo_bateria'] = reemplazo
+            entry['total_anio'] = entry['opex'] + reemplazo
+        acumulado += entry['total_anio']
+        entry['acumulado'] = acumulado
+        anual.append(entry)
+
+    return {
+        'anual': anual,
+        'total_tco': acumulado,
+    }
+
+
+def calc_all_costs(
+    operational_results: Dict[str, Dict[str, Any]],
+    cost_general: CostGeneralInputs,
+    capex_diesel: CostCapexDiesel | None = None,
+    capex_overnight: CostCapexOvernight | None = None,
+    capex_flash: CostCapexFlash | None = None,
+    capex_opportunity: CostCapexOpportunity | None = None,
+    capex_hydrogen: CostCapexHydrogen | None = None,
+    opex_diesel: CostOpexDiesel | None = None,
+    opex_overnight: CostOpexOvernight | None = None,
+    opex_flash: CostOpexFlash | None = None,
+    opex_opportunity: CostOpexOpportunity | None = None,
+    opex_hydrogen: CostOpexHydrogen | None = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Calcula CAPEX, OPEX anual y TCO para todas las tecnologías disponibles."""
+    dias = cost_general.dias_operacion_anio
+    horizonte = cost_general.horizonte_anios
+    out: Dict[str, Dict[str, Any]] = {}
+
+    # --- Diesel ---
+    if 'diesel' in operational_results and capex_diesel and opex_diesel:
+        op = operational_results['diesel']
+        capex = calc_capex_diesel(op, capex_diesel)
+        opex = calc_opex_anual_diesel(op, opex_diesel, dias)
+        tco = calc_tco(capex, opex, horizonte, op['flota_requerida'])
+        out['diesel'] = {'capex': capex, 'opex': opex, 'tco': tco}
+
+    # --- Overnight ---
+    if 'overnight' in operational_results and capex_overnight and opex_overnight:
+        op = operational_results['overnight']
+        capex = calc_capex_overnight(op, capex_overnight)
+        opex = calc_opex_anual_overnight(op, opex_overnight, dias)
+        tco = calc_tco(
+            capex, opex, horizonte, op['flota_requerida'],
+            opex_overnight.bateria_reemplazo_eur,
+            opex_overnight.bateria_vida_util_anios,
+        )
+        out['overnight'] = {'capex': capex, 'opex': opex, 'tco': tco}
+
+    # --- Flash ---
+    if 'flash' in operational_results and capex_flash and opex_flash:
+        op = operational_results['flash']
+        capex = calc_capex_flash(op, capex_flash)
+        opex = calc_opex_anual_flash(op, opex_flash, dias)
+        tco = calc_tco(
+            capex, opex, horizonte, op['flota_requerida'],
+            opex_flash.bateria_reemplazo_eur,
+            opex_flash.bateria_vida_util_anios,
+        )
+        out['flash'] = {'capex': capex, 'opex': opex, 'tco': tco}
+
+    # --- Opportunity ---
+    if 'opportunity' in operational_results and capex_opportunity and opex_opportunity:
+        op = operational_results['opportunity']
+        capex = calc_capex_opportunity(op, capex_opportunity)
+        opex = calc_opex_anual_opportunity(op, opex_opportunity, dias)
+        tco = calc_tco(
+            capex, opex, horizonte, op['flota_requerida'],
+            opex_opportunity.bateria_reemplazo_eur,
+            opex_opportunity.bateria_vida_util_anios,
+        )
+        out['opportunity'] = {'capex': capex, 'opex': opex, 'tco': tco}
+
+    # --- Hydrogen ---
+    if 'hydrogen' in operational_results and capex_hydrogen and opex_hydrogen:
+        op = operational_results['hydrogen']
+        capex = calc_capex_hydrogen(op, capex_hydrogen)
+        opex = calc_opex_anual_hydrogen(op, opex_hydrogen, dias)
+        tco = calc_tco(capex, opex, horizonte, op['flota_requerida'])
+        out['hydrogen'] = {'capex': capex, 'opex': opex, 'tco': tco}
+
+    return out

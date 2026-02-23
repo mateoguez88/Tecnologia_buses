@@ -1,118 +1,134 @@
-# 🚌 Planes de operación – Evaluador de tecnologías de buses
+# 🚌 Evaluador de Tecnologías de Buses
 
-Herramienta en **Python + Streamlit** que transforma el Excel
-**Planes de operación_tenologias.xlsx** en un motor de cálculo paramétrico
-para comparar tecnologías de operación de buses:
+Herramienta interactiva en **Python + Streamlit** para el análisis comparativo
+de tecnologías de operación de flotas de buses urbanos. Cubre tanto el
+**dimensionamiento operacional** como el **análisis financiero completo**
+(CAPEX, OPEX, TCO).
 
-- Diésel
-- Eléctrico nocturno (overnight)
-- Eléctrico carga de oportunidad / flash
-- Hidrógeno
+Tecnologías soportadas:
+
+| Tecnología | Energía | Recarga |
+|---|---|---|
+| ⛽ Diésel | Litros de diésel | Surtidor convencional |
+| 🔋 Eléctrico nocturno (overnight) | kWh en batería | Patio – ventana nocturna |
+| ⚡ Eléctrico flash | kWh en batería | Mini-cargas en ruta + patio |
+| 🔌 Eléctrico oportunidad | kWh en batería | Cargas en cabecera + patio |
+| 💧 Hidrógeno (FCEV) | kg de H₂ | Estación de hidrógeno |
 
 ---
 
 ## 📋 1) Requisitos
 
-- Python 3.10+ instalado.
-- Acceso a internet (para cargar fuentes y recursos de Streamlit).
+- Python 3.10+
+- Acceso a internet (fuentes tipográficas y recursos de Streamlit)
 
 ---
 
 ## 🛠️ 2) Instalación
 
-En una terminal, dentro de la carpeta del proyecto:
-
 ```bash
 python -m venv .venv
 
-# mac / linux
-source .venv/bin/activate
-
-# windows
+# Windows
 .venv\Scripts\activate
+
+# macOS / Linux
+source .venv/bin/activate
 
 pip install -r requirements.txt
 ```
 
+Dependencias principales: `streamlit`, `pandas`, `plotly`, `openpyxl`.
+
 ---
 
-## ▶️ 3) Cómo usar la aplicación
+## ▶️ 3) Uso
 
-1. Activa el entorno virtual (ver sección anterior).
-2. Lanza la app Streamlit:
+```bash
+streamlit run app.py
+```
 
-	 ```bash
-	 streamlit run app.py
-	 ```
+La aplicación tiene **dos páginas** con navegación automática en el menú lateral:
 
-3. Se abrirá el navegador con la interfaz gráfica:
-	 - En la **barra lateral** ajustas los *inputs generales* de operación
-		 (longitud de trazado, velocidad, headway, tiempo de servicio, % km en vacío, etc.).
-	 - En las secciones de cada **tecnología** defines parámetros específicos
-		 (autonomía diésel, tamaño de batería, consumos energéticos, potencias de carga,
-		 eficiencia de carga, etc.).
-	 - En el área central se muestran:
-		 - Flota requerida por tecnología.
-		 - Km/año por flota.
-		 - Energía o combustible consumido.
-		 - Potencias de carga necesarias (en el caso de eléctricos e hidrógeno).
+### Página 🚌 Operación (`app.py`)
+
+- **Barra lateral**: inputs generales de ruta (longitud, velocidad, headway,
+  tiempo de servicio, % km en vacío, etc.) y parámetros por tecnología
+  (autonomía, batería, consumos, potencias de carga, eficiencia).
+- **Área central**:
+  - Tarjetas resumen: flota requerida, km/día, energía consumida.
+  - Tabla de métricas principales con ciclos, mini-cargas y repostaje.
+  - Gráficos interactivos: flota y operación, energía y potencia,
+    infraestructura de carga, detalle flash/oportunidad.
+- **📥 Exportar a Excel**: descarga `comparador_operacion.xlsx` con hojas
+  de *Inputs* y *Operación*.
+
+### Página 💰 Costos (`pages/2_💰_Costos.py`)
+
+- **Barra lateral**: horizonte del proyecto (años) y días de operación/año.
+- **Tabs por tecnología**: parámetros CAPEX (vehículo, cargadores,
+  subestación, estación H₂, infraestructura depósito) y OPEX
+  (combustible/energía, mantenimiento/km, batería).
+- **Área central**:
+  - Tarjetas resumen: CAPEX, OPEX/año, TCO, €/km por tecnología.
+  - Gráficos: CAPEX vs OPEX, desglose CAPEX y OPEX por componente,
+    evolución temporal del TCO (con marcadores de reemplazo de batería),
+    costo por km y TCO por bus.
+  - Tabla comparativa transpuesta con desglose completo.
+- **📥 Exportar a Excel**: descarga `comparador_completo.xlsx` con hojas
+  de *Inputs*, *Operación* y *Costos* (formateado con colores y estilos).
 
 ---
 
 ## 🧱 4) Estructura del proyecto
 
-- [engine.py](engine.py): motor de cálculo donde se implementa la lógica que antes estaba en el Excel.
-- [app.py](app.py): interfaz Streamlit que llama a las funciones de cálculo y presenta los resultados al usuario.
-- [Planes de operación_tenologias.xlsx](Planes%20de%20operaci%C3%B3n_tenologias.xlsx): archivo original de referencia sobre el que se basan las fórmulas.
+```
+.
+├── app.py                      # Página principal: análisis operacional
+├── engine.py                   # Motor de cálculo (operación + costos)
+├── utils.py                    # Estilos, constantes, exportación Excel
+├── requirements.txt            # Dependencias Python
+├── pages/
+│   └── 2_💰_Costos.py          # Página de análisis financiero
+└── Planes de operación_tenologias.xlsx  # Excel de referencia
+```
 
-Ejecutando `streamlit run app.py`, la app utiliza directamente las fórmulas de
-[engine.py](engine.py) para recalcular todo en tiempo real cuando cambias los
-parámetros.
+| Archivo | Descripción |
+|---|---|
+| **engine.py** | Dataclasses de entrada + funciones puras de cálculo. Módulo operacional (`calc_diesel`, `calc_electric_*`, `calc_hydrogen`, `run_all`) y módulo de costos (`calc_capex_*`, `calc_opex_anual_*`, `calc_tco`, `calc_all_costs`). |
+| **app.py** | Página Streamlit de operación. Guarda resultados en `st.session_state` para compartirlos con la página de costos. |
+| **pages/2_💰_Costos.py** | Análisis económico: CAPEX, OPEX, TCO con visualizaciones interactivas. |
+| **utils.py** | Constantes de colores/iconos, CSS global, helpers de formato y **generador de reportes Excel** con openpyxl (hojas formateadas con colores por tecnología, bordes, freeze panes). |
 
 ---
 
-## 📊 5) Tecnologías modeladas (resumen visual)
+## 🧮 5) Lógica de cálculo
 
-| Tecnología                | Energía base      | Dónde "ocurre" la recarga                           |
-|--------------------------|-------------------|------------------------------------------------------|
-| Diésel                   | Litros de diésel  | Surtidor convencional                                |
-| Eléctrico nocturno       | kWh en batería    | Principalmente en patio (ventana nocturna)          |
-| Eléctrico flash/oportunidad | kWh en batería | Cargas cortas en ruta + posible carga en patio      |
-| Hidrógeno                | kg de H₂          | Estación de hidrógeno (producción/almacenamiento)   |
+### Operación
 
----
+- **Flota por headway**:
+  `Flota = ⌈ T_ciclo / headway ⌉`
 
-## 🧮 6) Resumen de la lógica de cálculo
+- **Km/día**:
+  `Km_com = 2 × (T_servicio / headway) × L`
+  `Km_tot = Km_com × (1 + p_vacío)`
 
-De forma simplificada, el modelo sigue estos pasos principales:
-
-- **Flota por headway**: se calcula el tiempo de ciclo ida+vuelta (incluyendo
-	regulación/ES) y se aplica:
-  
-	$\text{Flota} = \lceil T_{ciclo} / \text{headway} \rceil$
-
-- **Km comerciales y totales por día**:
-  
-	$\text{Km\_comerciales\_día} = 2 \cdot (T_{servicio} / \text{headway}) \cdot L$
-  
-	$\text{Km\_totales\_día} = \text{Km\_comerciales\_día} \cdot (1 + p_{vacío})$
-
-- **Consumo de combustible/energía**:
-	- *Diésel*: se multiplican los km totales por el consumo [l/km] y se verifica que
-		la autonomía [km] cubre los km por bus.
-	- *Eléctricos*: se usa el consumo [kWh/km] y la energía útil de batería
-		(considerando $SOC_{reserva}$) para comprobar que la autonomía cubre los ciclos previstos.
+- **Consumo**: diésel [L/km], eléctricos [kWh/km] con SOC reserva,
+  hidrógeno [kg/km].
 
 - **Estrategias de carga**:
-	- **Eléctrico nocturno**: se concentra la carga en una ventana nocturna,
-		dimensionando la potencia de cargadores en patio para reponer la energía diaria.
-	- **Flash / oportunidad**: se estima la energía que debe cargarse en cada
-		parada/terminal (mini-cargas) según el tiempo disponible y la potencia de los
-		cargadores en ruta; si es necesario, se complementa con carga en patio.
-	- **Hidrógeno**: se calcula el consumo [kg/100 km] a partir de los km totales y
-		se pueden derivar requerimientos de producción/almacenamiento (según los
-		supuestos del motor).
+  - *Nocturna*: ventana nocturna en patio, dimensiona potencia instalada.
+  - *Flash / oportunidad*: mini-cargas en ruta (pantógrafo/conector) +
+    complemento en patio.
+  - *Hidrógeno*: consumo directo desde estación.
 
-Todos estos cálculos están implementados en clases de entrada y funciones en
-[engine.py](engine.py), de forma que puedes ajustar o sustituir fácilmente
-cualquier supuesto.
+### Costos
+
+- **CAPEX**: vehículos × flota + cargadores + subestación + infraestructura.
+- **OPEX anual**: (combustible/energía + mantenimiento/km + batería) × días/año.
+- **TCO**: CAPEX (año 0) + Σ OPEX (años 1..n) + reemplazos de batería
+  periódicos.
+- **€/km** y **€/bus** derivados del TCO total.
+
+Todos los cálculos están implementados como funciones puras en `engine.py`,
+fácilmente ajustables y testeables.

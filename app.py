@@ -15,6 +15,7 @@ from engine import (
     ElectricFlashInputs, ElectricOpportunityInputs, HydrogenInputs,
     run_all
 )
+from utils import TECH_COLORS, TECH_ICONS, inject_css, generate_excel_report
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuración y estilos
@@ -27,108 +28,7 @@ st.set_page_config(
     initial_sidebar_state='expanded'
 )
 
-# CSS personalizado estilo Apple
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    
-    html, body, [class*="css"] {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-    
-    .stApp {
-        background: linear-gradient(180deg, #fafafa 0%, #f5f5f7 100%);
-    }
-    
-    h1 {
-        font-weight: 600 !important;
-        letter-spacing: -0.5px !important;
-        color: #1d1d1f !important;
-    }
-    
-    h2, h3 {
-        font-weight: 500 !important;
-        color: #1d1d1f !important;
-    }
-    
-    [data-testid="stSidebar"] {
-        background: #ffffff !important;
-        border-right: 1px solid #e5e5e7 !important;
-    }
-    
-    [data-testid="stMetricValue"] {
-        font-size: 28px !important;
-        font-weight: 600 !important;
-        color: #1d1d1f !important;
-    }
-    
-    [data-testid="stMetricLabel"] {
-        font-size: 12px !important;
-        font-weight: 500 !important;
-        color: #86868b !important;
-        text-transform: uppercase !important;
-        letter-spacing: 0.5px !important;
-    }
-    
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background: transparent;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background: #f5f5f7 !important;
-        border-radius: 8px !important;
-        padding: 8px 16px !important;
-        font-weight: 500 !important;
-        border: none !important;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background: #1d1d1f !important;
-        color: white !important;
-    }
-    
-    .metric-card {
-        background: white;
-        border-radius: 16px;
-        padding: 24px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.04);
-        border: 1px solid #e5e5e7;
-        margin-bottom: 16px;
-        text-align: center;
-    }
-    
-    hr {
-        border: none !important;
-        height: 1px !important;
-        background: #e5e5e7 !important;
-        margin: 32px 0 !important;
-    }
-    
-    .stDataFrame {
-        border-radius: 12px !important;
-        overflow: hidden !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Colores por tecnología (paleta Apple-inspired)
-TECH_COLORS = {
-    'Diesel': '#FF9500',
-    'Eléctrico - Carga nocturna': '#34C759',
-    'Eléctrico - Carga flash': '#007AFF',
-    'Eléctrico - Carga por oportunidad': '#5856D6',
-    'Hidrógeno': '#AF52DE'
-}
-
-TECH_ICONS = {
-    'Diesel': '⛽',
-    'Eléctrico - Carga nocturna': '🔋',
-    'Eléctrico - Carga flash': '⚡',
-    'Eléctrico - Carga por oportunidad': '🔌',
-    'Hidrógeno': '💧'
-}
-
+inject_css()
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar - Inputs
 # ─────────────────────────────────────────────────────────────────────────────
@@ -313,6 +213,14 @@ with tech_tabs[4]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 results = run_all(g, diesel=diesel, overnight=overnight, flash=flash, opportunity=opp, hydrogen=hydro)
+
+# Guardar en session_state para compartir con la página de costos
+st.session_state['operational_results'] = results
+st.session_state['general_inputs'] = g
+st.session_state['tech_inputs'] = {
+    'diesel': diesel, 'overnight': overnight, 'flash': flash,
+    'opportunity': opp, 'hydrogen': hydro,
+}
 
 st.markdown("---")
 st.markdown("## 📊 Resultados")
@@ -965,12 +873,32 @@ with chart_tabs[4]:
         st.info("Configure las tecnologías Flash y/o Oportunidad para ver el análisis detallado")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Exportar a Excel
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.markdown("---")
+
+_excel_buf = generate_excel_report(
+    operational_results=results,
+    general_inputs=g,
+    tech_inputs=st.session_state.get('tech_inputs'),
+)
+
+st.download_button(
+    label='📥 Exportar resultados operativos a Excel',
+    data=_excel_buf,
+    file_name='comparador_operacion.xlsx',
+    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Footer
 # ─────────────────────────────────────────────────────────────────────────────
 
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #86868b; font-size: 12px; padding: 20px;">
-    Comparador de Tecnologías de Buses · IDOM
+    Comparador de Tecnologías de Buses · IDOM<br>
+    <span style="font-size: 11px;">Navega a <b>💰 Costos</b> en el menú lateral para el análisis económico</span>
 </div>
 """, unsafe_allow_html=True)
