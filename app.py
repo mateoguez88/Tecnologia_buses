@@ -45,6 +45,12 @@ with st.sidebar:
         min_value=0.1, value=23.0, step=0.5,
         help="Kilómetros del trazado en un sentido"
     )
+    n_estaciones = st.number_input(
+        'Número de estaciones',
+        min_value=2, value=max(2, round(23.0 / 0.5)), step=1,
+        help="Estaciones totales de la ruta (incluye las 2 cabeceras). "
+             "Regla orientativa: ~1 estación cada 500 m"
+    )
     velocidad = st.number_input(
         'Velocidad comercial (km/h)', 
         min_value=1.0, value=25.0, step=1.0
@@ -79,6 +85,7 @@ with st.sidebar:
         tiempo_servicio_min=t_serv,
         tiempo_entre_servicios_min=tes,
         km_vacio_frac=km_vacio,
+        n_estaciones=n_estaciones,
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,7 +122,7 @@ tech_tabs = st.tabs(['⛽ Diesel', '🔋 Nocturna', '⚡ Flash', '🔌 Oportunid
 with tech_tabs[0]:
     col1, col2 = st.columns(2)
     with col1:
-        consumo = st.number_input('Consumo (L/km)', min_value=0.01, value=0.10, step=0.01, key='d_cons')
+        consumo = st.number_input('Consumo (L/km)', min_value=0.01, value=0.44, step=0.01, key='d_cons')
     with col2:
         autonomia = st.number_input('Autonomía (km)', min_value=50.0, value=600.0, step=50.0, key='d_aut')
     diesel = DieselInputs(consumo_litros_km=consumo, autonomia_km=autonomia)
@@ -145,27 +152,41 @@ with tech_tabs[2]:
     with col2:
         eta_f = st.number_input('Eficiencia', min_value=0.5, max_value=1.0, value=0.90, step=0.01, key='fl_eta')
         carg_ruta = st.number_input('Cargador ruta (kW)', min_value=10.0, value=600.0, step=50.0, key='fl_ruta')
-        t_carga = st.number_input('Tiempo mini-carga (min)', min_value=0.5, value=3.0, step=0.5, key='fl_tcarga')
+        t_carga_cab_f = st.number_input('Carga cabecera (min)', min_value=0.1, value=3.0, step=0.5, key='fl_tcarga_cab',
+                                         help="Tiempo de carga en terminales (cabecera)")
     with col3:
+        t_carga_traz_f_s = st.number_input('Carga trazado (s)', min_value=1.0, value=10.0, step=1.0, key='fl_tcarga_traz',
+                                            help="Tiempo de carga en paradas intermedias (segundos)")
         t_reg_f = st.number_input('Tiempo regulación (min)', min_value=0.5, value=5.0, step=0.5, key='fl_reg',
                                    help="Tiempo en terminal entre servicios")
         carg_patio = st.number_input('Cargador patio (kW)', min_value=10.0, value=150.0, step=10.0, key='fl_patio')
         ventana_f = st.number_input('Ventana nocturna (h)', min_value=1.0, value=6.0, step=0.5, key='fl_vent')
     
-    # Modo de cálculo: optimizar flota vs restricción de mini-cargas
-    st.markdown("**Modo de cálculo**")
-    modo_f = st.radio("", ["Optimizar flota", "Restringir mini-cargas"], key='fl_modo', horizontal=True,
-                      help="'Optimizar flota' añade buses si se necesitan más mini-cargas que ciclos. 'Restringir' limita las mini-cargas y calcula la flota necesaria.")
-    max_mc_f = None
-    if modo_f == "Restringir mini-cargas":
-        max_mc_f = st.number_input('Máx. mini-cargas/bus', min_value=0, value=2, step=1, key='fl_max_mc')
+    # Puntos de carga: automático vs manual
+    st.markdown("**Puntos de carga en ruta**")
+    modo_carg_f = st.radio("", ["Optimizar", "Definir manualmente"], key='fl_carg_cab_modo', horizontal=True,
+                           help="'Optimizar' encuentra la combinación mínima de puntos (cabecera + trazado) "
+                                "para mantener la flota en el mínimo. 'Definir manualmente' permite fijar los valores.")
+    n_cab_f = None
+    n_traz_f = None
+    if modo_carg_f == "Definir manualmente":
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            n_cab_f = st.number_input('Puntos cabecera (0-2)', min_value=0, max_value=2, value=2, step=1, key='fl_n_cab',
+                                       help="Puntos de carga en terminales (máx 2, uno por cabecera)")
+        with mc2:
+            n_traz_f = st.number_input('Puntos trazado', min_value=0, max_value=g.max_puntos_trazado, value=0, step=1, key='fl_n_traz',
+                                        help=f"Puntos de carga en paradas intermedias (máx {g.max_puntos_trazado} = {n_estaciones} estaciones − 2 cabeceras)")
     
     flash = ElectricFlashInputs(
         bateria_kwh=bateria_f, consumo_kwh_km=c_kwhkm_f, soc_reserva_frac=soc_f,
-        eficiencia_carga=eta_f, cargador_ruta_kw=carg_ruta, tiempo_carga_ruta_min=t_carga,
+        eficiencia_carga=eta_f, cargador_ruta_kw=carg_ruta,
+        tiempo_carga_cabecera_min=t_carga_cab_f,
+        tiempo_carga_trazado_min=t_carga_traz_f_s / 60.0,
         tiempo_regulacion_min=t_reg_f,
         cargador_patio_kw=carg_patio, ventana_carga_h=ventana_f,
-        max_mini_cargas_restriccion=max_mc_f
+        n_puntos_cabecera_override=n_cab_f,
+        n_puntos_trazado_override=n_traz_f,
     )
 
 with tech_tabs[3]:
@@ -177,8 +198,11 @@ with tech_tabs[3]:
     with col2:
         eta_o = st.number_input('Eficiencia', min_value=0.5, max_value=1.0, value=0.90, step=0.01, key='op_eta')
         carg_ruta_o = st.number_input('Cargador ruta (kW)', min_value=10.0, value=200.0, step=10.0, key='op_ruta')
-        t_carga_o = st.number_input('Tiempo mini-carga (min)', min_value=0.5, value=10.0, step=0.5, key='op_tcarga')
+        t_carga_cab_o = st.number_input('Carga cabecera (min)', min_value=0.1, value=10.0, step=0.5, key='op_tcarga_cab',
+                                         help="Tiempo de carga en terminales (cabecera). Se limita al tiempo de regulación.")
     with col3:
+        t_carga_traz_o_s = st.number_input('Carga trazado (s)', min_value=1.0, value=10.0, step=1.0, key='op_tcarga_traz',
+                                            help="Tiempo de carga en paradas intermedias (segundos)")
         t_reg_o = st.number_input('Tiempo regulación (min)', min_value=0.5, value=10.0, step=0.5, key='op_reg',
                                    help="Tiempo en terminal entre servicios")
         carg_patio_o = st.number_input('Cargador patio (kW)', min_value=10.0, value=150.0, step=10.0, key='op_patio')
@@ -192,12 +216,32 @@ with tech_tabs[3]:
     if modo_o == "Restringir mini-cargas":
         max_mc_o = st.number_input('Máx. mini-cargas/bus', min_value=0, value=2, step=1, key='op_max_mc')
     
+    # Puntos de carga: automático vs manual
+    st.markdown("**Puntos de carga en ruta**")
+    modo_carg_o = st.radio("", ["Optimizar", "Definir manualmente"], key='op_carg_cab_modo', horizontal=True,
+                           help="'Optimizar' encuentra la combinación mínima de puntos (cabecera + trazado) "
+                                "para mantener la flota en el mínimo. 'Definir manualmente' permite fijar los valores.")
+    n_cab_o = None
+    n_traz_o = None
+    if modo_carg_o == "Definir manualmente":
+        mc1o, mc2o = st.columns(2)
+        with mc1o:
+            n_cab_o = st.number_input('Puntos cabecera (0-2)', min_value=0, max_value=2, value=2, step=1, key='op_n_cab',
+                                       help="Puntos de carga en terminales (máx 2, uno por cabecera)")
+        with mc2o:
+            n_traz_o = st.number_input('Puntos trazado', min_value=0, max_value=g.max_puntos_trazado, value=0, step=1, key='op_n_traz',
+                                        help=f"Puntos de carga en paradas intermedias (máx {g.max_puntos_trazado} = {n_estaciones} estaciones − 2 cabeceras)")
+    
     opp = ElectricOpportunityInputs(
         bateria_kwh=bateria_o, consumo_kwh_km=c_kwhkm_o, soc_reserva_frac=soc_o,
-        eficiencia_carga=eta_o, cargador_ruta_kw=carg_ruta_o, tiempo_carga_ruta_min=t_carga_o,
+        eficiencia_carga=eta_o, cargador_ruta_kw=carg_ruta_o,
+        tiempo_carga_cabecera_min=t_carga_cab_o,
+        tiempo_carga_trazado_min=t_carga_traz_o_s / 60.0,
         tiempo_regulacion_min=t_reg_o,
         cargador_patio_kw=carg_patio_o, ventana_carga_h=ventana_o,
-        max_mini_cargas_restriccion=max_mc_o
+        max_mini_cargas_restriccion=max_mc_o,
+        n_puntos_cabecera_override=n_cab_o,
+        n_puntos_trazado_override=n_traz_o,
     )
 
 with tech_tabs[4]:
@@ -478,11 +522,11 @@ with chart_tabs[1]:
             fig_energy = go.Figure()
             techs = []
             energia_patio = []
-            energia_cabecera = []
+            energia_ruta = []
             for key, data in electric_data.items():
                 techs.append(data['tecnologia'].replace('Eléctrico - ', ''))
                 energia_patio.append(data.get('energia_total_patio_kwh', 0))
-                energia_cabecera.append(data.get('energia_total_cabecera_kwh', 0))
+                energia_ruta.append(data.get('energia_total_ruta_kwh', 0))
             
             fig_energy.add_trace(go.Bar(
                 name='Patio (nocturna)', x=techs, y=energia_patio,
@@ -491,9 +535,9 @@ with chart_tabs[1]:
                 textposition='inside'
             ))
             fig_energy.add_trace(go.Bar(
-                name='Cabecera (ruta)', x=techs, y=energia_cabecera,
+                name='Ruta (cab+traz)', x=techs, y=energia_ruta,
                 marker_color='#FF9500',
-                text=[f"{e:,.0f}" for e in energia_cabecera],
+                text=[f"{e:,.0f}" for e in energia_ruta],
                 textposition='inside'
             ))
             fig_energy.update_layout(
@@ -612,12 +656,14 @@ with chart_tabs[2]:
                 charger_data.append({'Tecnología': tech, 'Tipo': 'Patio', 'Cantidad': data['cargadores_patio']})
             if 'n_cargadores_cabecera' in data and data['n_cargadores_cabecera'] > 0:
                 charger_data.append({'Tecnología': tech, 'Tipo': 'Cabecera', 'Cantidad': data['n_cargadores_cabecera']})
+            if 'n_cargadores_trazado' in data and data['n_cargadores_trazado'] > 0:
+                charger_data.append({'Tecnología': tech, 'Tipo': 'Trazado', 'Cantidad': data['n_cargadores_trazado']})
         
         if charger_data:
             df_chargers = pd.DataFrame(charger_data)
             fig_chargers = px.bar(
                 df_chargers, x='Tecnología', y='Cantidad', color='Tipo',
-                barmode='group', color_discrete_map={'Patio': '#34C759', 'Cabecera': '#FF9500'},
+                barmode='group', color_discrete_map={'Patio': '#34C759', 'Cabecera': '#FF9500', 'Trazado': '#5AC8FA'},
                 text='Cantidad'
             )
             fig_chargers.update_layout(
@@ -704,14 +750,23 @@ with chart_tabs[3]:
         'potencia_instalada_cabecera_kw': 'Potencia cabecera (kW)',
         'potencia_total_instalada_kw': 'Potencia total (kW)',
         'energia_total_patio_kwh': 'Energía patio (kWh)',
-        'energia_total_cabecera_kwh': 'Energía cabecera (kWh)',
+        'energia_total_ruta_kwh': 'Energía ruta (kWh)',
         'energia_total_dia_kwh': 'Energía total día (kWh)',
         'ciclos_por_bus': 'Ciclos/bus',
-        'mini_cargas_por_bus': 'Mini-cargas/bus',
-        'max_mini_cargas_posibles': 'Máx mini-cargas posibles',
+        'cargas_cab_por_bus': 'Cargas cabecera/bus',
+        'cargas_traz_por_bus': 'Cargas trazado/bus',
         'es_viable': 'Viable',
         'km_faltantes': 'Km faltantes',
-        'km_recuperados_por_mini': 'Km/mini-carga',
+        'km_recuperados_por_carga_cabecera': 'Km/carga cabecera',
+        'km_recuperados_por_carga_trazado': 'Km/carga trazado',
+        'n_puntos_cabecera': 'Puntos cabecera',
+        'n_puntos_trazado': 'Puntos trazado',
+        'n_cargadores_trazado': 'Cargadores trazado',
+        'cargadores_por_punto_cabecera': 'Carg./punto cabecera',
+        'cargadores_por_punto_trazado': 'Carg./punto trazado',
+        'tiempo_carga_cabecera_min': 'T. carga cabecera (min)',
+        'tiempo_carga_trazado_min': 'T. carga trazado (min)',
+        'potencia_instalada_trazado_kw': 'Potencia trazado (kW)',
     }
     
     df_display = df_display.rename(columns=column_names)
@@ -738,6 +793,11 @@ with chart_tabs[4]:
             st.markdown("#### ⚡ Carga Flash")
             if flash_data:
                 flota_add = flash_data['flota_requerida'] - flash_data['flota_headway']
+                cargas_ciclo_f = flash_data.get('cargas_por_ciclo', 1)
+                n_cab_f = flash_data.get('n_puntos_cabecera', 0)
+                n_traz_f = flash_data.get('n_puntos_trazado', 0)
+                c_cab_f = flash_data.get('cargas_cab_por_bus', 0)
+                c_traz_f = flash_data.get('cargas_traz_por_bus', 0)
                 
                 st.markdown(f"""
                 | Parámetro | Valor |
@@ -745,27 +805,40 @@ with chart_tabs[4]:
                 | **Flota base (headway)** | {flash_data['flota_headway']} buses |
                 | **Flota optimizada** | {flash_data['flota_requerida']} buses {"(+" + str(flota_add) + " por energía)" if flota_add > 0 else ""} |
                 | **Ciclos por bus** | {flash_data['ciclos_por_bus']} |
-                | **Mini-cargas por bus** | {flash_data['mini_cargas_por_bus']} (máx. {flash_data['ciclos_por_bus']}/ciclo) |
-                | **Km recuperados/carga** | {flash_data['km_recuperados_por_mini']:.1f} km |
+                | **Puntos cabecera / trazado** | {n_cab_f} / {n_traz_f} |
+                | **Cargas cab / traz por bus** | {c_cab_f} / {c_traz_f} |
+                | **Mini-cargas totales/bus** | {flash_data['mini_cargas_por_bus']} (máx. {cargas_ciclo_f * flash_data['ciclos_por_bus']}) |
+                | **Km recup./carga cabecera** | {flash_data.get('km_recuperados_por_carga_cabecera', 0):.1f} km |
+                | **Km recup./carga trazado** | {flash_data.get('km_recuperados_por_carga_trazado', 0):.1f} km |
                 | **Autonomía usable** | {flash_data['autonomia_usable_km']:.1f} km |
                 | **Autonomía efectiva** | {flash_data.get('autonomia_efectiva_km', flash_data['autonomia_usable_km']):.1f} km |
                 | **Km por bus/día** | {flash_data['km_por_bus_tot']:.1f} km |
                 | **Tiempo regulación** | {flash_data.get('tiempo_regulacion_min', 5):.1f} min |
+                | **Tiempo carga cabecera** | {flash_data.get('tiempo_carga_cabecera_min', 0):.1f} min |
+                | **Tiempo carga trazado** | {flash_data.get('tiempo_carga_trazado_min', 0) * 60:.0f} s |
                 """)
                 
                 st.markdown("**Infraestructura de carga:**")
+                cppc_f = flash_data.get('cargadores_por_punto_cabecera', 0)
+                cppt_f = flash_data.get('cargadores_por_punto_trazado', 0)
+                n_carg_cab_f = flash_data.get('n_cargadores_cabecera', 0)
+                n_carg_traz_f = flash_data.get('n_cargadores_trazado', 0)
+                total_ruta_f = n_carg_cab_f + n_carg_traz_f
+                pot_cab_f = flash_data.get('potencia_instalada_cabecera_kw', 0)
+                pot_traz_f = flash_data.get('potencia_instalada_trazado_kw', 0)
                 st.markdown(f"""
-                | Ubicación | Cargadores | Potencia |
-                |-----------|------------|----------|
-                | Cabecera | {flash_data['n_cargadores_cabecera']} | {flash_data['potencia_instalada_cabecera_kw']:,.0f} kW |
-                | Patio | {flash_data['cargadores_patio']} | {flash_data['potencia_instalada_patio_kw']:,.0f} kW |
-                | **TOTAL** | **{flash_data['n_cargadores_cabecera'] + flash_data['cargadores_patio']}** | **{flash_data.get('potencia_total_instalada_kw', 0):,.0f} kW** |
+                | Ubicación | Puntos | Carg./punto | Cargadores | Potencia |
+                |-----------|--------|-------------|------------|----------|
+                | Cabecera | {n_cab_f} | {cppc_f} | {n_carg_cab_f} | {pot_cab_f:,.0f} kW |
+                | Trazado | {n_traz_f} | {cppt_f} | {n_carg_traz_f} | {pot_traz_f:,.0f} kW |
+                | Patio | - | - | {flash_data['cargadores_patio']} | {flash_data['potencia_instalada_patio_kw']:,.0f} kW |
+                | **TOTAL** | | | **{total_ruta_f + flash_data['cargadores_patio']}** | **{flash_data.get('potencia_total_instalada_kw', 0):,.0f} kW** |
                 """)
                 
                 st.markdown("**Balance energético diario:**")
                 st.markdown(f"""
                 - Consumo total flota: {flash_data.get('energia_consumida_por_bus_kwh', 0) * flash_data['flota_requerida']:,.0f} kWh
-                - Energía en cabecera: {flash_data.get('energia_total_cabecera_kwh', 0):,.0f} kWh
+                - Energía en ruta: {flash_data.get('energia_total_ruta_kwh', 0):,.0f} kWh
                 - Energía en patio: {flash_data['energia_total_patio_kwh']:,.0f} kWh
                 - **Total diario**: {flash_data.get('energia_total_dia_kwh', 0):,.0f} kWh
                 """)
@@ -776,6 +849,11 @@ with chart_tabs[4]:
             st.markdown("#### 🔌 Carga por Oportunidad")
             if opp_data:
                 flota_add = opp_data['flota_requerida'] - opp_data['flota_headway']
+                cargas_ciclo_o = opp_data.get('cargas_por_ciclo', 1)
+                n_cab_o = opp_data.get('n_puntos_cabecera', 0)
+                n_traz_o = opp_data.get('n_puntos_trazado', 0)
+                c_cab_o = opp_data.get('cargas_cab_por_bus', 0)
+                c_traz_o = opp_data.get('cargas_traz_por_bus', 0)
                 
                 st.markdown(f"""
                 | Parámetro | Valor |
@@ -783,28 +861,40 @@ with chart_tabs[4]:
                 | **Flota base (headway)** | {opp_data['flota_headway']} buses |
                 | **Flota optimizada** | {opp_data['flota_requerida']} buses {"(+" + str(flota_add) + " por energía)" if flota_add > 0 else ""} |
                 | **Ciclos por bus** | {opp_data['ciclos_por_bus']} |
-                | **Mini-cargas por bus** | {opp_data['mini_cargas_por_bus']} (máx. {opp_data['ciclos_por_bus']}/ciclo) |
+                | **Puntos cabecera / trazado** | {n_cab_o} / {n_traz_o} |
+                | **Cargas cab / traz por bus** | {c_cab_o} / {c_traz_o} |
+                | **Mini-cargas totales/bus** | {opp_data['mini_cargas_por_bus']} (máx. {cargas_ciclo_o * opp_data['ciclos_por_bus']}) |
                 | **Tiempo regulación** | {opp_data.get('tiempo_regulacion_min', 10):.1f} min |
-                | **Tiempo carga efectivo** | {opp_data.get('tiempo_carga_efectivo_min', 0):.1f} min |
-                | **Km recuperados/carga** | {opp_data['km_recuperados_por_mini']:.1f} km |
+                | **Tiempo carga cabecera** | {opp_data.get('tiempo_carga_cabecera_min', 0):.1f} min |
+                | **Tiempo carga trazado** | {opp_data.get('tiempo_carga_trazado_min', 0) * 60:.0f} s |
+                | **Km recup./carga cabecera** | {opp_data.get('km_recuperados_por_carga_cabecera', 0):.1f} km |
+                | **Km recup./carga trazado** | {opp_data.get('km_recuperados_por_carga_trazado', 0):.1f} km |
                 | **Autonomía usable** | {opp_data['autonomia_usable_km']:.1f} km |
                 | **Autonomía efectiva** | {opp_data.get('autonomia_efectiva_km', opp_data['autonomia_usable_km']):.1f} km |
                 | **Km por bus/día** | {opp_data['km_por_bus_tot']:.1f} km |
                 """)
                 
                 st.markdown("**Infraestructura de carga:**")
+                cppc_o = opp_data.get('cargadores_por_punto_cabecera', 0)
+                cppt_o = opp_data.get('cargadores_por_punto_trazado', 0)
+                n_carg_cab_o = opp_data.get('n_cargadores_cabecera', 0)
+                n_carg_traz_o = opp_data.get('n_cargadores_trazado', 0)
+                total_ruta_o = n_carg_cab_o + n_carg_traz_o
+                pot_cab_o = opp_data.get('potencia_instalada_cabecera_kw', 0)
+                pot_traz_o = opp_data.get('potencia_instalada_trazado_kw', 0)
                 st.markdown(f"""
-                | Ubicación | Cargadores | Potencia |
-                |-----------|------------|----------|
-                | Cabecera | {opp_data['n_cargadores_cabecera']} | {opp_data['potencia_instalada_cabecera_kw']:,.0f} kW |
-                | Patio | {opp_data['cargadores_patio']} | {opp_data['potencia_instalada_patio_kw']:,.0f} kW |
-                | **TOTAL** | **{opp_data['n_cargadores_cabecera'] + opp_data['cargadores_patio']}** | **{opp_data.get('potencia_total_instalada_kw', 0):,.0f} kW** |
+                | Ubicación | Puntos | Carg./punto | Cargadores | Potencia |
+                |-----------|--------|-------------|------------|----------|
+                | Cabecera | {n_cab_o} | {cppc_o} | {n_carg_cab_o} | {pot_cab_o:,.0f} kW |
+                | Trazado | {n_traz_o} | {cppt_o} | {n_carg_traz_o} | {pot_traz_o:,.0f} kW |
+                | Patio | - | - | {opp_data['cargadores_patio']} | {opp_data['potencia_instalada_patio_kw']:,.0f} kW |
+                | **TOTAL** | | | **{total_ruta_o + opp_data['cargadores_patio']}** | **{opp_data.get('potencia_total_instalada_kw', 0):,.0f} kW** |
                 """)
                 
                 st.markdown("**Balance energético diario:**")
                 st.markdown(f"""
                 - Consumo total flota: {opp_data.get('energia_consumida_por_bus_kwh', 0) * opp_data['flota_requerida']:,.0f} kWh
-                - Energía en cabecera: {opp_data.get('energia_total_cabecera_kwh', 0):,.0f} kWh
+                - Energía en ruta: {opp_data.get('energia_total_ruta_kwh', 0):,.0f} kWh
                 - Energía en patio: {opp_data['energia_total_patio_kwh']:,.0f} kWh
                 - **Total diario**: {opp_data.get('energia_total_dia_kwh', 0):,.0f} kWh
                 """)
@@ -834,8 +924,8 @@ with chart_tabs[4]:
             
             with comp_col3:
                 # Diferencia de cargadores
-                carg_flash = flash_data['n_cargadores_cabecera'] + flash_data['cargadores_patio']
-                carg_opp = opp_data['n_cargadores_cabecera'] + opp_data['cargadores_patio']
+                carg_flash = flash_data.get('n_cargadores_ruta', 0) + flash_data['cargadores_patio']
+                carg_opp = opp_data.get('n_cargadores_ruta', 0) + opp_data['cargadores_patio']
                 diff_carg = abs(carg_opp - carg_flash)
                 st.metric("Diferencia cargadores", f"{diff_carg}",
                          delta=f"Flash: {carg_flash} | Opp: {carg_opp}")
@@ -844,10 +934,10 @@ with chart_tabs[4]:
             st.markdown("#### Diferencias clave")
             diff_df = pd.DataFrame([
                 {
-                    'Aspecto': 'Ubicación cargadores',
-                    'Flash': 'Cabecera principal',
-                    'Oportunidad': 'Cabecera principal',
-                    'Implicación': 'Ambos usan 1 punto de carga en ruta'
+                    'Aspecto': 'Puntos cabecera / trazado',
+                    'Flash': f"{flash_data.get('n_puntos_cabecera', 0)} / {flash_data.get('n_puntos_trazado', 0)}",
+                    'Oportunidad': f"{opp_data.get('n_puntos_cabecera', 0)} / {opp_data.get('n_puntos_trazado', 0)}",
+                    'Implicación': 'Cabecera: terminales (máx 2). Trazado: paradas intermedias.'
                 },
                 {
                     'Aspecto': 'Potencia por cargador',
@@ -856,16 +946,22 @@ with chart_tabs[4]:
                     'Implicación': 'Flash requiere infraestructura eléctrica más robusta'
                 },
                 {
-                    'Aspecto': 'Tiempo de carga',
-                    'Flash': f"{flash.tiempo_carga_ruta_min} min",
-                    'Oportunidad': f"{opp_data.get('tiempo_carga_efectivo_min', opp.tiempo_carga_ruta_min):.1f} min",
-                    'Implicación': 'Flash minimiza tiempo parado, Oportunidad usa regulación'
+                    'Aspecto': 'Tiempo carga cabecera',
+                    'Flash': f"{flash_data.get('tiempo_carga_cabecera_min', 0):.1f} min",
+                    'Oportunidad': f"{opp_data.get('tiempo_carga_cabecera_min', 0):.1f} min",
+                    'Implicación': 'Oportunidad usa regulación para cargar más tiempo'
                 },
                 {
-                    'Aspecto': 'Mini-cargas por ciclo',
-                    'Flash': f"{flash_data['mini_cargas_por_bus']} (máx {flash_data.get('max_mini_cargas_posibles', 0)})",
-                    'Oportunidad': f"{opp_data['mini_cargas_por_bus']} (máx {opp_data.get('max_mini_cargas_posibles', 0)})",
-                    'Implicación': 'Flash puede cargar 2x por ciclo (ambas cabeceras)'
+                    'Aspecto': 'Tiempo carga trazado',
+                    'Flash': f"{flash_data.get('tiempo_carga_trazado_min', 0) * 60:.0f} s",
+                    'Oportunidad': f"{opp_data.get('tiempo_carga_trazado_min', 0) * 60:.0f} s",
+                    'Implicación': 'Carga ultrarrápida en paradas intermedias'
+                },
+                {
+                    'Aspecto': 'Mini-cargas por bus',
+                    'Flash': f"{flash_data['mini_cargas_por_bus']} (cab: {flash_data.get('cargas_cab_por_bus', 0)}, traz: {flash_data.get('cargas_traz_por_bus', 0)})",
+                    'Oportunidad': f"{opp_data['mini_cargas_por_bus']} (cab: {opp_data.get('cargas_cab_por_bus', 0)}, traz: {opp_data.get('cargas_traz_por_bus', 0)})",
+                    'Implicación': 'Distribución de cargas entre cabecera y trazado'
                 },
             ])
             st.dataframe(diff_df, use_container_width=True, hide_index=True)

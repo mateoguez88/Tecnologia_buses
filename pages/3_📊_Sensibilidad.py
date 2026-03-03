@@ -124,8 +124,9 @@ def extract_metrics(results: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, A
 
         # Cargadores totales (solo eléctricos)
         cargadores_cab = r.get("n_cargadores_cabecera", 0) or 0
+        cargadores_traz = r.get("n_cargadores_trazado", 0) or 0
         cargadores_patio = r.get("cargadores_patio", 0) or 0
-        cargadores_total = cargadores_cab + cargadores_patio
+        cargadores_total = cargadores_cab + cargadores_traz + cargadores_patio
 
         out[key] = {
             "tecnologia": tech_name,
@@ -134,6 +135,7 @@ def extract_metrics(results: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, A
             "cargadores_total": cargadores_total,
             "cargadores_patio": cargadores_patio,
             "cargadores_cabecera": cargadores_cab,
+            "cargadores_trazado": cargadores_traz,
             "energia_val": energia_val,
             "energia_label": energia_label,
         }

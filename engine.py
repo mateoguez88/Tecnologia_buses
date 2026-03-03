@@ -42,6 +42,12 @@ class GeneralInputs:
     tiempo_servicio_min: float = 990.0
     tiempo_entre_servicios_min: float = 5.0  # layover/regulación por terminal
     km_vacio_frac: float = 0.05
+    n_estaciones: int = 46  # Estaciones en la ruta (regla: ~1 cada 500 m)
+
+    @property
+    def max_puntos_trazado(self) -> int:
+        """Máx puntos de carga en trazado = estaciones - 2 (cabeceras)."""
+        return max(0, self.n_estaciones - 2)
 
     def tiempo_ida_min(self) -> float:
         return (self.km_trazado_sentido / self.velocidad_kmh) * 60.0
@@ -73,7 +79,7 @@ class GeneralInputs:
 
 @dataclass
 class DieselInputs:
-    consumo_litros_km: float = 0.10
+    consumo_litros_km: float = 0.44
     autonomia_km: float = 600.0
 
 
@@ -94,13 +100,18 @@ class ElectricFlashInputs:
     soc_reserva_frac: float = 0.20
     eficiencia_carga: float = 0.90
     cargador_ruta_kw: float = 600.0
-    tiempo_carga_ruta_min: float = 3.0
-    tiempo_regulacion_min: float = 5.0  # Tiempo en terminal (regulación)
+    # Tiempos de carga diferenciados
+    tiempo_carga_cabecera_min: float = 3.0   # Carga en terminal (más larga)
+    tiempo_carga_trazado_min: float = 0.17   # Carga en ruta intermedia (~10 s)
+    tiempo_regulacion_min: float = 5.0       # Tiempo en terminal (regulación)
     # Carga nocturna (si aplica) para completar SOC
     cargador_patio_kw: float = 150.0
     ventana_carga_h: float = 6.0
     # Modo de cálculo: None=optimizar flota, int=restricción máx. mini-cargas
     max_mini_cargas_restriccion: int = None
+    # Override puntos de carga: None=auto, int=manual
+    n_puntos_cabecera_override: int = None   # 0-2 (terminales)
+    n_puntos_trazado_override: int = None    # 0+ (paradas intermedias)
 
 
 @dataclass
@@ -110,12 +121,17 @@ class ElectricOpportunityInputs:
     soc_reserva_frac: float = 0.20
     eficiencia_carga: float = 0.90
     cargador_ruta_kw: float = 200.0
-    tiempo_carga_ruta_min: float = 10.0
-    tiempo_regulacion_min: float = 10.0  # Tiempo en terminal (regulación)
+    # Tiempos de carga diferenciados
+    tiempo_carga_cabecera_min: float = 10.0  # Carga en terminal (más larga)
+    tiempo_carga_trazado_min: float = 0.17   # Carga en ruta intermedia (~10 s)
+    tiempo_regulacion_min: float = 10.0      # Tiempo en terminal (regulación)
     cargador_patio_kw: float = 150.0
     ventana_carga_h: float = 6.0
     # Modo de cálculo: None=optimizar flota, int=restricción máx. mini-cargas
     max_mini_cargas_restriccion: int = None
+    # Override puntos de carga: None=auto, int=manual
+    n_puntos_cabecera_override: int = None   # 0-2 (terminales)
+    n_puntos_trazado_override: int = None    # 0+ (paradas intermedias)
 
 
 @dataclass
@@ -243,65 +259,158 @@ def _mini_charge_km(power_kw: float, minutes: float, consumo_kwh_km: float, eta:
     return e_neta / consumo_kwh_km
 
 
-def _calcular_flota_optimizada(
+def _calcular_flota_con_dos_tipos(
     km_totales_dia: float,
     km_ciclo: float,
     aut_usable_km: float,
-    km_por_mini_carga: float,
+    n_puntos_cabecera: int,
+    km_por_carga_cabecera: float,
+    n_puntos_trazado: int,
+    km_por_carga_trazado: float,
     flota_minima_headway: int,
-    max_mini_cargas_restriccion: int = None
-) -> tuple[int, int, int]:
+    max_mini_cargas_restriccion: int = None,
+) -> tuple[int, int, int, int]:
     """
-    Calcula la flota óptima considerando mini-cargas.
-    
-    Modos:
-    - max_mini_cargas_restriccion=None: Optimizar flota (añadir buses si mini-cargas > ciclos)
-    - max_mini_cargas_restriccion=N: Calcular flota necesaria con máximo N mini-cargas/bus
-    
-    Retorna: (flota_requerida, ciclos_por_bus, mini_cargas_por_bus)
+    Calcula la flota óptima con cargas diferenciadas cabecera/trazado.
+
+    Cada ciclo el bus pasa por *n_puntos_cabecera* cargadores de cabecera
+    (máx 2, uno por terminal) y *n_puntos_trazado* cargadores intermedios.
+    Los km recuperados por carga difieren según el tipo.
+
+    Retorna: (flota, ciclos, cargas_cab_por_bus, cargas_traz_por_bus)
     """
-    # Empezar con flota mínima por headway
     flota = flota_minima_headway
-    
+
     while True:
         km_por_bus = km_totales_dia / flota
         ciclos = ceil(km_por_bus / km_ciclo)
-        
-        # Determinar máx. mini-cargas permitidas
+
+        cargas_cab_max = n_puntos_cabecera * ciclos
+        cargas_traz_max = n_puntos_trazado * ciclos
+        total_cargas_max = cargas_cab_max + cargas_traz_max
+
         if max_mini_cargas_restriccion is not None:
-            # Modo restricción: usuario limita las mini-cargas
-            max_mini = min(max_mini_cargas_restriccion, ciclos)
-        else:
-            # Modo optimización: máximo 1 mini-carga por ciclo
-            max_mini = ciclos
-        
-        # Máxima autonomía con mini-cargas permitidas
-        km_max_con_minicargas = aut_usable_km + (max_mini * km_por_mini_carga)
-        
-        if km_max_con_minicargas >= km_por_bus:
-            # Viable con esta flota
+            # Restricción sobre total de cargas; recortar proporcionalmente
+            if total_cargas_max > max_mini_cargas_restriccion:
+                ratio = max_mini_cargas_restriccion / total_cargas_max if total_cargas_max else 0
+                cargas_cab_max = int(cargas_cab_max * ratio)
+                cargas_traz_max = int(cargas_traz_max * ratio)
+
+        km_recovery = cargas_cab_max * km_por_carga_cabecera + cargas_traz_max * km_por_carga_trazado
+        km_max = aut_usable_km + km_recovery
+
+        if km_max >= km_por_bus:
+            # Hay capacidad suficiente — calcular cargas reales necesarias
             km_faltantes = max(0.0, km_por_bus - aut_usable_km)
-            mini_cargas = ceil(km_faltantes / km_por_mini_carga) if km_faltantes > 0 else 0
-            mini_cargas = min(mini_cargas, max_mini)
-            return flota, ciclos, mini_cargas
+            if km_faltantes <= 0:
+                return flota, ciclos, 0, 0
+
+            # Priorizar cabecera (mayor recuperación por carga)
+            cargas_cab = 0
+            if km_por_carga_cabecera > 0 and n_puntos_cabecera > 0:
+                cargas_cab = min(ceil(km_faltantes / km_por_carga_cabecera), cargas_cab_max)
+            km_cubiertos_cab = cargas_cab * km_por_carga_cabecera
+            km_restantes = max(0.0, km_faltantes - km_cubiertos_cab)
+
+            cargas_traz = 0
+            if km_restantes > 0 and km_por_carga_trazado > 0 and n_puntos_trazado > 0:
+                cargas_traz = min(ceil(km_restantes / km_por_carga_trazado), cargas_traz_max)
+
+            return flota, ciclos, cargas_cab, cargas_traz
         else:
-            # Necesita más flota
             flota += 1
-            # Límite de seguridad
             if flota > flota_minima_headway * 10:
-                km_faltantes = max(0.0, km_por_bus - aut_usable_km)
-                mini_cargas = min(max_mini, ceil(km_faltantes / km_por_mini_carga) if km_faltantes > 0 else 0)
-                return flota, ciclos, mini_cargas
+                return flota, ciclos, cargas_cab_max, cargas_traz_max
+
+
+def _optimizar_puntos_carga(
+    km_totales_dia: float,
+    km_ciclo: float,
+    aut_usable_km: float,
+    km_por_carga_cabecera: float,
+    km_por_carga_trazado: float,
+    flota_minima_headway: int,
+    max_mini_cargas_restriccion: int = None,
+    max_puntos_trazado: int = 99,
+) -> tuple[int, int, int, int, int, int]:
+    """
+    Encuentra la combinación mínima (n_cab, n_traz) de puntos de carga
+    que mantiene la flota en el mínimo por headway.
+
+    Cabecera: máx 2 (uno por terminal).
+    Trazado:  0..max_puntos_trazado (= n_estaciones - 2).
+
+    Retorna: (n_cab, n_traz, flota, ciclos, cargas_cab, cargas_traz)
+    """
+    best = None  # (total_puntos, n_cab, n_traz, flota, ciclos, c_cab, c_traz)
+
+    for n_cab in range(3):  # 0, 1, 2
+        for n_traz in range(max_puntos_trazado + 1):
+            flota, ciclos, c_cab, c_traz = _calcular_flota_con_dos_tipos(
+                km_totales_dia, km_ciclo, aut_usable_km,
+                n_cab, km_por_carga_cabecera,
+                n_traz, km_por_carga_trazado,
+                flota_minima_headway, max_mini_cargas_restriccion,
+            )
+            if flota <= flota_minima_headway:
+                total_pts = n_cab + n_traz
+                if best is None or total_pts < best[0]:
+                    best = (total_pts, n_cab, n_traz, flota, ciclos, c_cab, c_traz)
+                break  # no necesitamos más trazado para este n_cab
+
+    if best:
+        _, n_cab, n_traz, flota, ciclos, c_cab, c_traz = best
+        return n_cab, n_traz, flota, ciclos, c_cab, c_traz
+
+    # Fallback: último intento
+    return 2, n_traz, flota, ciclos, c_cab, c_traz
+
+
+def _calcular_cargadores_fisicos_dos_tipos(
+    t_carga_cabecera_min: float,
+    t_carga_trazado_min: float,
+    headway_min: float,
+    n_puntos_cabecera: int,
+    n_puntos_trazado: int,
+    cargas_cab: int,
+    cargas_traz: int,
+) -> tuple[int, int, int, int]:
+    """
+    Cargadores físicos por tipo de punto de carga.
+
+    Cada punto necesita ceil(t_carga / headway) cargadores para
+    absorber la frecuencia de buses.
+
+    Retorna: (carg_por_pto_cab, n_carg_cab, carg_por_pto_traz, n_carg_traz)
+    """
+    # Cabecera
+    if cargas_cab == 0 or n_puntos_cabecera == 0:
+        cppc, nc = 0, 0
+    else:
+        cppc = max(1, ceil(t_carga_cabecera_min / headway_min))
+        nc = n_puntos_cabecera * cppc
+
+    # Trazado
+    if cargas_traz == 0 or n_puntos_trazado == 0:
+        cppt, nt = 0, 0
+    else:
+        cppt = max(1, ceil(t_carga_trazado_min / headway_min))
+        nt = n_puntos_trazado * cppt
+
+    return cppc, nc, cppt, nt
 
 
 def calc_electric_flash(g: GeneralInputs, e: ElectricFlashInputs) -> Dict[str, Any]:
     """
-    Carga Flash: cargas ultrarrápidas (>400kW) en cabecera de muy corta duración (2-5 min).
-    
-    Lógica de optimización:
-    - 1 cargador en cabecera
-    - Cada bus hace 1 mini-carga por ciclo (máximo)
-    - Si mini-cargas necesarias > ciclos → añadir bus (que también hace mini-cargas)
+    Carga Flash: cargas ultrarrápidas (>400 kW).
+
+    Dos tipos de punto de carga:
+      - Cabecera (terminal): hasta 2, carga más larga (ej. 3 min).
+      - Trazado (intermedio): paradas en ruta, carga muy corta (ej. 10 s).
+
+    Modo Optimizar: encuentra la combinación (n_cab, n_traz) mínima
+    para mantener la flota en el mínimo por headway.
+    Modo Manual: el usuario fija n_cab y n_traz.
     """
     fleet_hw = g.flota_por_headway()
     km_com = g.km_comerciales_dia()
@@ -312,47 +421,76 @@ def calc_electric_flash(g: GeneralInputs, e: ElectricFlashInputs) -> Dict[str, A
 
     km_ciclo = 2.0 * g.km_trazado_sentido
 
-    # Km recuperados por mini-carga
-    km_recupera = _mini_charge_km(
-        e.cargador_ruta_kw, e.tiempo_carga_ruta_min, 
-        e.consumo_kwh_km, e.eficiencia_carga
+    # Km recuperados por carga según tipo
+    km_recupera_cab = _mini_charge_km(
+        e.cargador_ruta_kw, e.tiempo_carga_cabecera_min,
+        e.consumo_kwh_km, e.eficiencia_carga,
     )
-    
-    # Calcular flota optimizada (con o sin restricción de mini-cargas)
-    fleet_req, ciclos, mini_cargas = _calcular_flota_optimizada(
-        km_tot, km_ciclo, aut_usable, km_recupera, fleet_hw, e.max_mini_cargas_restriccion
+    km_recupera_traz = _mini_charge_km(
+        e.cargador_ruta_kw, e.tiempo_carga_trazado_min,
+        e.consumo_kwh_km, e.eficiencia_carga,
     )
-    
+
+    if e.n_puntos_cabecera_override is not None:
+        # Modo Manual
+        n_cab = e.n_puntos_cabecera_override
+        n_traz = e.n_puntos_trazado_override or 0
+        fleet_req, ciclos, cargas_cab, cargas_traz = _calcular_flota_con_dos_tipos(
+            km_tot, km_ciclo, aut_usable,
+            n_cab, km_recupera_cab, n_traz, km_recupera_traz,
+            fleet_hw, e.max_mini_cargas_restriccion,
+        )
+    else:
+        # Modo Optimizar
+        n_cab, n_traz, fleet_req, ciclos, cargas_cab, cargas_traz = _optimizar_puntos_carga(
+            km_tot, km_ciclo, aut_usable,
+            km_recupera_cab, km_recupera_traz,
+            fleet_hw, e.max_mini_cargas_restriccion,
+            max_puntos_trazado=g.max_puntos_trazado,
+        )
+
+    # Cargadores físicos por tipo
+    cppc, n_carg_cab, cppt, n_carg_traz = _calcular_cargadores_fisicos_dos_tipos(
+        e.tiempo_carga_cabecera_min, e.tiempo_carga_trazado_min,
+        g.headway_min, n_cab, n_traz, cargas_cab, cargas_traz,
+    )
+    n_cargadores_ruta = n_carg_cab + n_carg_traz
+
+    mini_cargas = cargas_cab + cargas_traz
+    cargas_por_ciclo = n_cab + n_traz
+
     km_por_bus_com = km_com / fleet_req
     km_por_bus_tot = km_tot / fleet_req
     km_faltantes = max(0.0, km_por_bus_tot - aut_usable)
-    
-    # Cargadores en cabecera: 1 cargador (según especificación)
-    n_cargadores_cabecera = 1 if mini_cargas > 0 else 0
-    potencia_instalada_cabecera_kw = n_cargadores_cabecera * e.cargador_ruta_kw
 
-    # Energía consumida vs recuperada en mini-cargas
+    potencia_instalada_cabecera_kw = n_carg_cab * e.cargador_ruta_kw
+    potencia_instalada_trazado_kw = n_carg_traz * e.cargador_ruta_kw
+
+    # Energía por tipo de carga
     energia_consumida_por_bus_kwh = km_por_bus_tot * e.consumo_kwh_km
-    energia_por_mini = e.cargador_ruta_kw * (e.tiempo_carga_ruta_min / 60.0) * e.eficiencia_carga
-    energia_mini_cargas_kwh = mini_cargas * energia_por_mini
-    
-    # Carga nocturna: diferencia entre consumo y lo recuperado en ruta
+    e_por_carga_cab = e.cargador_ruta_kw * (e.tiempo_carga_cabecera_min / 60.0) * e.eficiencia_carga
+    e_por_carga_traz = e.cargador_ruta_kw * (e.tiempo_carga_trazado_min / 60.0) * e.eficiencia_carga
+    energia_mini_cargas_kwh = cargas_cab * e_por_carga_cab + cargas_traz * e_por_carga_traz
+
+    # Carga nocturna
     energia_pendiente_kwh = max(0.0, energia_consumida_por_bus_kwh - energia_mini_cargas_kwh)
     energia_recarga_patio_por_bus_kwh = energia_pendiente_kwh / e.eficiencia_carga
     tiempo_carga_patio_h = energia_recarga_patio_por_bus_kwh / e.cargador_patio_kw if energia_recarga_patio_por_bus_kwh > 0 else 0
     cargadores_patio = ceil((fleet_req * tiempo_carga_patio_h) / e.ventana_carga_h) if tiempo_carga_patio_h > 0 else 0
     energia_total_patio_kwh = fleet_req * energia_recarga_patio_por_bus_kwh
     potencia_instalada_patio_kw = cargadores_patio * e.cargador_patio_kw
-    
-    # Energía total diaria (red)
-    energia_total_cabecera_kwh = fleet_req * mini_cargas * e.cargador_ruta_kw * (e.tiempo_carga_ruta_min / 60.0)
-    energia_total_dia_kwh = energia_total_patio_kwh + energia_total_cabecera_kwh
-    
+
+    # Energía total diaria (red) — sin eficiencia (energía bruta de red)
+    e_bruta_cab = e.cargador_ruta_kw * (e.tiempo_carga_cabecera_min / 60.0)
+    e_bruta_traz = e.cargador_ruta_kw * (e.tiempo_carga_trazado_min / 60.0)
+    energia_total_ruta_kwh = fleet_req * (cargas_cab * e_bruta_cab + cargas_traz * e_bruta_traz)
+    energia_total_dia_kwh = energia_total_patio_kwh + energia_total_ruta_kwh
+
     # Potencia total instalada
-    potencia_total_instalada_kw = potencia_instalada_patio_kw + potencia_instalada_cabecera_kw
-    
-    # Autonomía efectiva con mini-cargas
-    autonomia_efectiva_km = aut_usable + (mini_cargas * km_recupera)
+    potencia_total_instalada_kw = potencia_instalada_patio_kw + potencia_instalada_cabecera_kw + potencia_instalada_trazado_kw
+
+    # Autonomía efectiva
+    autonomia_efectiva_km = aut_usable + cargas_cab * km_recupera_cab + cargas_traz * km_recupera_traz
 
     return {
         'tecnologia': 'Eléctrico - Carga flash',
@@ -367,16 +505,30 @@ def calc_electric_flash(g: GeneralInputs, e: ElectricFlashInputs) -> Dict[str, A
         'autonomia_usable_km': aut_usable,
         'autonomia_efectiva_km': autonomia_efectiva_km,
         'km_faltantes': km_faltantes,
-        'km_recuperados_por_mini': km_recupera,
+        'km_recuperados_por_carga_cabecera': km_recupera_cab,
+        'km_recuperados_por_carga_trazado': km_recupera_traz,
         'mini_cargas_por_bus': mini_cargas,
+        'cargas_cab_por_bus': cargas_cab,
+        'cargas_traz_por_bus': cargas_traz,
+        'cargas_por_ciclo': cargas_por_ciclo,
+        'n_puntos_cabecera': n_cab,
+        'n_puntos_trazado': n_traz,
         'tiempo_regulacion_min': e.tiempo_regulacion_min,
-        'n_cargadores_cabecera': n_cargadores_cabecera,
+        'tiempo_carga_cabecera_min': e.tiempo_carga_cabecera_min,
+        'tiempo_carga_trazado_min': e.tiempo_carga_trazado_min,
+        'n_puntos_carga': cargas_por_ciclo,
+        'cargadores_por_punto_cabecera': cppc,
+        'cargadores_por_punto_trazado': cppt,
+        'n_cargadores_cabecera': n_carg_cab,
+        'n_cargadores_trazado': n_carg_traz,
+        'n_cargadores_ruta': n_cargadores_ruta,
         'potencia_instalada_cabecera_kw': potencia_instalada_cabecera_kw,
+        'potencia_instalada_trazado_kw': potencia_instalada_trazado_kw,
         'cargadores_patio': cargadores_patio,
         'energia_consumida_por_bus_kwh': energia_consumida_por_bus_kwh,
         'energia_mini_cargas_por_bus_kwh': energia_mini_cargas_kwh,
         'energia_total_patio_kwh': energia_total_patio_kwh,
-        'energia_total_cabecera_kwh': energia_total_cabecera_kwh,
+        'energia_total_ruta_kwh': energia_total_ruta_kwh,
         'energia_total_dia_kwh': energia_total_dia_kwh,
         'potencia_instalada_patio_kw': potencia_instalada_patio_kw,
         'potencia_total_instalada_kw': potencia_total_instalada_kw,
@@ -385,12 +537,11 @@ def calc_electric_flash(g: GeneralInputs, e: ElectricFlashInputs) -> Dict[str, A
 
 def calc_electric_opportunity(g: GeneralInputs, e: ElectricOpportunityInputs) -> Dict[str, Any]:
     """
-    Carga por Oportunidad: cargas de potencia media (150-300kW) durante regulación (5-15 min).
-    
-    Lógica de optimización:
-    - Carga durante el tiempo de regulación en terminal
-    - Cada bus hace 1 mini-carga por ciclo (máximo)
-    - Si mini-cargas necesarias > ciclos → añadir bus (que también hace mini-cargas)
+    Carga por Oportunidad: cargas de potencia media (150-300 kW).
+
+    Dos tipos de punto de carga (igual que Flash):
+      - Cabecera (terminal): hasta 2. Tiempo efectivo = min(t_carga_cab, t_regulación).
+      - Trazado (intermedio): paradas en ruta, carga corta.
     """
     fleet_hw = g.flota_por_headway()
     km_com = g.km_comerciales_dia()
@@ -401,34 +552,58 @@ def calc_electric_opportunity(g: GeneralInputs, e: ElectricOpportunityInputs) ->
 
     km_ciclo = 2.0 * g.km_trazado_sentido
 
-    # Tiempo de carga efectivo: mínimo entre tiempo disponible y tiempo de carga deseado
-    tiempo_carga_efectivo = min(e.tiempo_carga_ruta_min, e.tiempo_regulacion_min)
-    
-    # Km recuperados por mini-carga
-    km_recupera = _mini_charge_km(
-        e.cargador_ruta_kw, tiempo_carga_efectivo, 
-        e.consumo_kwh_km, e.eficiencia_carga
+    # Tiempo efectivo en cabecera limitado por regulación
+    t_cab_efectivo = min(e.tiempo_carga_cabecera_min, e.tiempo_regulacion_min)
+    t_traz_efectivo = e.tiempo_carga_trazado_min
+
+    km_recupera_cab = _mini_charge_km(
+        e.cargador_ruta_kw, t_cab_efectivo,
+        e.consumo_kwh_km, e.eficiencia_carga,
     )
-    
-    # Calcular flota optimizada (con o sin restricción de mini-cargas)
-    fleet_req, ciclos, mini_cargas = _calcular_flota_optimizada(
-        km_tot, km_ciclo, aut_usable, km_recupera, fleet_hw, e.max_mini_cargas_restriccion
+    km_recupera_traz = _mini_charge_km(
+        e.cargador_ruta_kw, t_traz_efectivo,
+        e.consumo_kwh_km, e.eficiencia_carga,
     )
-    
+
+    if e.n_puntos_cabecera_override is not None:
+        n_cab = e.n_puntos_cabecera_override
+        n_traz = e.n_puntos_trazado_override or 0
+        fleet_req, ciclos, cargas_cab, cargas_traz = _calcular_flota_con_dos_tipos(
+            km_tot, km_ciclo, aut_usable,
+            n_cab, km_recupera_cab, n_traz, km_recupera_traz,
+            fleet_hw, e.max_mini_cargas_restriccion,
+        )
+    else:
+        n_cab, n_traz, fleet_req, ciclos, cargas_cab, cargas_traz = _optimizar_puntos_carga(
+            km_tot, km_ciclo, aut_usable,
+            km_recupera_cab, km_recupera_traz,
+            fleet_hw, e.max_mini_cargas_restriccion,
+            max_puntos_trazado=g.max_puntos_trazado,
+        )
+
+    # Cargadores físicos por tipo
+    cppc, n_carg_cab, cppt, n_carg_traz = _calcular_cargadores_fisicos_dos_tipos(
+        t_cab_efectivo, t_traz_efectivo,
+        g.headway_min, n_cab, n_traz, cargas_cab, cargas_traz,
+    )
+    n_cargadores_ruta = n_carg_cab + n_carg_traz
+
+    mini_cargas = cargas_cab + cargas_traz
+    cargas_por_ciclo = n_cab + n_traz
+
     km_por_bus_com = km_com / fleet_req
     km_por_bus_tot = km_tot / fleet_req
     km_faltantes = max(0.0, km_por_bus_tot - aut_usable)
-    
-    # Cargadores en cabecera: depende de buses simultáneos
-    buses_simultaneos = ceil(tiempo_carga_efectivo / g.headway_min) if mini_cargas > 0 else 0
-    n_cargadores_cabecera = max(1, buses_simultaneos) if mini_cargas > 0 else 0
-    potencia_instalada_cabecera_kw = n_cargadores_cabecera * e.cargador_ruta_kw
 
-    # Energía consumida vs recuperada
+    potencia_instalada_cabecera_kw = n_carg_cab * e.cargador_ruta_kw
+    potencia_instalada_trazado_kw = n_carg_traz * e.cargador_ruta_kw
+
+    # Energía por tipo de carga
     energia_consumida_por_bus_kwh = km_por_bus_tot * e.consumo_kwh_km
-    energia_por_mini = e.cargador_ruta_kw * (tiempo_carga_efectivo / 60.0) * e.eficiencia_carga
-    energia_mini_cargas_kwh = mini_cargas * energia_por_mini
-    
+    e_por_carga_cab = e.cargador_ruta_kw * (t_cab_efectivo / 60.0) * e.eficiencia_carga
+    e_por_carga_traz = e.cargador_ruta_kw * (t_traz_efectivo / 60.0) * e.eficiencia_carga
+    energia_mini_cargas_kwh = cargas_cab * e_por_carga_cab + cargas_traz * e_por_carga_traz
+
     # Carga nocturna
     energia_pendiente_kwh = max(0.0, energia_consumida_por_bus_kwh - energia_mini_cargas_kwh)
     energia_recarga_patio_por_bus_kwh = energia_pendiente_kwh / e.eficiencia_carga
@@ -436,16 +611,18 @@ def calc_electric_opportunity(g: GeneralInputs, e: ElectricOpportunityInputs) ->
     cargadores_patio = ceil((fleet_req * tiempo_carga_patio_h) / e.ventana_carga_h) if tiempo_carga_patio_h > 0 else 0
     energia_total_patio_kwh = fleet_req * energia_recarga_patio_por_bus_kwh
     potencia_instalada_patio_kw = cargadores_patio * e.cargador_patio_kw
-    
-    # Energía total diaria
-    energia_total_cabecera_kwh = fleet_req * mini_cargas * e.cargador_ruta_kw * (tiempo_carga_efectivo / 60.0)
-    energia_total_dia_kwh = energia_total_patio_kwh + energia_total_cabecera_kwh
-    
+
+    # Energía total diaria (red)
+    e_bruta_cab = e.cargador_ruta_kw * (t_cab_efectivo / 60.0)
+    e_bruta_traz = e.cargador_ruta_kw * (t_traz_efectivo / 60.0)
+    energia_total_ruta_kwh = fleet_req * (cargas_cab * e_bruta_cab + cargas_traz * e_bruta_traz)
+    energia_total_dia_kwh = energia_total_patio_kwh + energia_total_ruta_kwh
+
     # Potencia total instalada
-    potencia_total_instalada_kw = potencia_instalada_patio_kw + potencia_instalada_cabecera_kw
-    
-    # Autonomía efectiva con mini-cargas
-    autonomia_efectiva_km = aut_usable + (mini_cargas * km_recupera)
+    potencia_total_instalada_kw = potencia_instalada_patio_kw + potencia_instalada_cabecera_kw + potencia_instalada_trazado_kw
+
+    # Autonomía efectiva
+    autonomia_efectiva_km = aut_usable + cargas_cab * km_recupera_cab + cargas_traz * km_recupera_traz
 
     return {
         'tecnologia': 'Eléctrico - Carga por oportunidad',
@@ -460,17 +637,30 @@ def calc_electric_opportunity(g: GeneralInputs, e: ElectricOpportunityInputs) ->
         'autonomia_usable_km': aut_usable,
         'autonomia_efectiva_km': autonomia_efectiva_km,
         'km_faltantes': km_faltantes,
-        'km_recuperados_por_mini': km_recupera,
+        'km_recuperados_por_carga_cabecera': km_recupera_cab,
+        'km_recuperados_por_carga_trazado': km_recupera_traz,
         'mini_cargas_por_bus': mini_cargas,
+        'cargas_cab_por_bus': cargas_cab,
+        'cargas_traz_por_bus': cargas_traz,
+        'cargas_por_ciclo': cargas_por_ciclo,
+        'n_puntos_cabecera': n_cab,
+        'n_puntos_trazado': n_traz,
         'tiempo_regulacion_min': e.tiempo_regulacion_min,
-        'tiempo_carga_efectivo_min': tiempo_carga_efectivo,
-        'n_cargadores_cabecera': n_cargadores_cabecera,
+        'tiempo_carga_cabecera_min': t_cab_efectivo,
+        'tiempo_carga_trazado_min': t_traz_efectivo,
+        'n_puntos_carga': cargas_por_ciclo,
+        'cargadores_por_punto_cabecera': cppc,
+        'cargadores_por_punto_trazado': cppt,
+        'n_cargadores_cabecera': n_carg_cab,
+        'n_cargadores_trazado': n_carg_traz,
+        'n_cargadores_ruta': n_cargadores_ruta,
         'potencia_instalada_cabecera_kw': potencia_instalada_cabecera_kw,
+        'potencia_instalada_trazado_kw': potencia_instalada_trazado_kw,
         'cargadores_patio': cargadores_patio,
         'energia_consumida_por_bus_kwh': energia_consumida_por_bus_kwh,
         'energia_mini_cargas_por_bus_kwh': energia_mini_cargas_kwh,
         'energia_total_patio_kwh': energia_total_patio_kwh,
-        'energia_total_cabecera_kwh': energia_total_cabecera_kwh,
+        'energia_total_ruta_kwh': energia_total_ruta_kwh,
         'energia_total_dia_kwh': energia_total_dia_kwh,
         'potencia_instalada_patio_kw': potencia_instalada_patio_kw,
         'potencia_total_instalada_kw': potencia_total_instalada_kw,
@@ -551,7 +741,7 @@ class CostGeneralInputs:
 @dataclass
 class CostCapexDiesel:
     vehiculo_eur: float = 250_000.0
-    infraestructura_deposito_eur_bus: float = 15_000.0
+    infraestructura_deposito_eur: float = 15_000.0
 
 
 @dataclass
@@ -559,32 +749,34 @@ class CostCapexOvernight:
     vehiculo_eur: float = 450_000.0
     cargador_pistola_eur: float = 40_000.0
     subestacion_electrica_eur: float = 200_000.0
-    infraestructura_deposito_eur_bus: float = 20_000.0
+    infraestructura_deposito_eur: float = 20_000.0
 
 
 @dataclass
 class CostCapexFlash:
     vehiculo_eur: float = 500_000.0
     cargador_pantografo_cabecera_eur: float = 350_000.0
+    cargador_trazado_eur: float = 350_000.0    # Cargador en parada intermedia
     cargador_pistola_patio_eur: float = 40_000.0
     subestacion_electrica_eur: float = 300_000.0
-    infraestructura_deposito_eur_bus: float = 20_000.0
+    infraestructura_deposito_eur: float = 20_000.0
 
 
 @dataclass
 class CostCapexOpportunity:
     vehiculo_eur: float = 480_000.0
     cargador_oportunidad_cabecera_eur: float = 250_000.0
+    cargador_trazado_eur: float = 250_000.0    # Cargador en parada intermedia
     cargador_pistola_patio_eur: float = 40_000.0
     subestacion_electrica_eur: float = 250_000.0
-    infraestructura_deposito_eur_bus: float = 20_000.0
+    infraestructura_deposito_eur: float = 20_000.0
 
 
 @dataclass
 class CostCapexHydrogen:
     vehiculo_eur: float = 600_000.0
     estacion_hidrogeno_eur: float = 1_500_000.0
-    infraestructura_deposito_eur_bus: float = 20_000.0
+    infraestructura_deposito_eur: float = 20_000.0
 
 
 @dataclass
@@ -634,11 +826,12 @@ class CostOpexHydrogen:
 def calc_capex_diesel(op: Dict[str, Any], c: CostCapexDiesel) -> Dict[str, Any]:
     flota = op['flota_requerida']
     vehiculos = flota * c.vehiculo_eur
-    deposito = flota * c.infraestructura_deposito_eur_bus
+    deposito = c.infraestructura_deposito_eur
     total = vehiculos + deposito
     return {
         'vehiculos': vehiculos,
         'cargadores_cabecera': 0.0,
+        'cargadores_trazado': 0.0,
         'cargadores_patio': 0.0,
         'subestacion': 0.0,
         'estacion_h2': 0.0,
@@ -653,11 +846,12 @@ def calc_capex_overnight(op: Dict[str, Any], c: CostCapexOvernight) -> Dict[str,
     vehiculos = flota * c.vehiculo_eur
     cargadores = n_cargadores_patio * c.cargador_pistola_eur
     subestacion = c.subestacion_electrica_eur
-    deposito = flota * c.infraestructura_deposito_eur_bus
+    deposito = c.infraestructura_deposito_eur
     total = vehiculos + cargadores + subestacion + deposito
     return {
         'vehiculos': vehiculos,
         'cargadores_cabecera': 0.0,
+        'cargadores_trazado': 0.0,
         'cargadores_patio': cargadores,
         'subestacion': subestacion,
         'estacion_h2': 0.0,
@@ -669,16 +863,19 @@ def calc_capex_overnight(op: Dict[str, Any], c: CostCapexOvernight) -> Dict[str,
 def calc_capex_flash(op: Dict[str, Any], c: CostCapexFlash) -> Dict[str, Any]:
     flota = op['flota_requerida']
     n_cab = op.get('n_cargadores_cabecera', 0)
+    n_traz = op.get('n_cargadores_trazado', 0)
     n_patio = op.get('cargadores_patio', 0)
     vehiculos = flota * c.vehiculo_eur
     cargadores_cab = n_cab * c.cargador_pantografo_cabecera_eur
+    cargadores_traz = n_traz * c.cargador_trazado_eur
     cargadores_pat = n_patio * c.cargador_pistola_patio_eur
     subestacion = c.subestacion_electrica_eur
-    deposito = flota * c.infraestructura_deposito_eur_bus
-    total = vehiculos + cargadores_cab + cargadores_pat + subestacion + deposito
+    deposito = c.infraestructura_deposito_eur
+    total = vehiculos + cargadores_cab + cargadores_traz + cargadores_pat + subestacion + deposito
     return {
         'vehiculos': vehiculos,
         'cargadores_cabecera': cargadores_cab,
+        'cargadores_trazado': cargadores_traz,
         'cargadores_patio': cargadores_pat,
         'subestacion': subestacion,
         'estacion_h2': 0.0,
@@ -690,16 +887,19 @@ def calc_capex_flash(op: Dict[str, Any], c: CostCapexFlash) -> Dict[str, Any]:
 def calc_capex_opportunity(op: Dict[str, Any], c: CostCapexOpportunity) -> Dict[str, Any]:
     flota = op['flota_requerida']
     n_cab = op.get('n_cargadores_cabecera', 0)
+    n_traz = op.get('n_cargadores_trazado', 0)
     n_patio = op.get('cargadores_patio', 0)
     vehiculos = flota * c.vehiculo_eur
     cargadores_cab = n_cab * c.cargador_oportunidad_cabecera_eur
+    cargadores_traz = n_traz * c.cargador_trazado_eur
     cargadores_pat = n_patio * c.cargador_pistola_patio_eur
     subestacion = c.subestacion_electrica_eur
-    deposito = flota * c.infraestructura_deposito_eur_bus
-    total = vehiculos + cargadores_cab + cargadores_pat + subestacion + deposito
+    deposito = c.infraestructura_deposito_eur
+    total = vehiculos + cargadores_cab + cargadores_traz + cargadores_pat + subestacion + deposito
     return {
         'vehiculos': vehiculos,
         'cargadores_cabecera': cargadores_cab,
+        'cargadores_trazado': cargadores_traz,
         'cargadores_patio': cargadores_pat,
         'subestacion': subestacion,
         'estacion_h2': 0.0,
@@ -712,11 +912,12 @@ def calc_capex_hydrogen(op: Dict[str, Any], c: CostCapexHydrogen) -> Dict[str, A
     flota = op['flota_requerida']
     vehiculos = flota * c.vehiculo_eur
     estacion = c.estacion_hidrogeno_eur
-    deposito = flota * c.infraestructura_deposito_eur_bus
+    deposito = c.infraestructura_deposito_eur
     total = vehiculos + estacion + deposito
     return {
         'vehiculos': vehiculos,
         'cargadores_cabecera': 0.0,
+        'cargadores_trazado': 0.0,
         'cargadores_patio': 0.0,
         'subestacion': 0.0,
         'estacion_h2': estacion,

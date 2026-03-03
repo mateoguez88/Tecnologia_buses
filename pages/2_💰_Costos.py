@@ -110,12 +110,12 @@ if 'diesel' in op_results:
             )
         with c2:
             d_deposito = st.number_input(
-                'Infra depósito (€/bus)', min_value=0.0, value=15_000.0,
+                'Infra depósito (€)', min_value=0.0, value=15_000.0,
                 step=1_000.0, key='cd_dep',
             )
         capex_diesel = CostCapexDiesel(
             vehiculo_eur=d_vehiculo,
-            infraestructura_deposito_eur_bus=d_deposito,
+            infraestructura_deposito_eur=d_deposito,
         )
 
         st.markdown("#### OPEX")
@@ -161,14 +161,14 @@ if 'overnight' in op_results:
             )
         with c3:
             on_dep = st.number_input(
-                'Infra depósito (€/bus)', min_value=0.0, value=20_000.0,
+                'Infra depósito (€)', min_value=0.0, value=20_000.0,
                 step=1_000.0, key='con_dep',
             )
         capex_overnight = CostCapexOvernight(
             vehiculo_eur=on_vehiculo,
             cargador_pistola_eur=on_carg,
             subestacion_electrica_eur=on_sub,
-            infraestructura_deposito_eur_bus=on_dep,
+            infraestructura_deposito_eur=on_dep,
         )
 
         st.markdown("#### OPEX")
@@ -234,7 +234,7 @@ if 'flash' in op_results:
             )
         with c3:
             fl_dep = st.number_input(
-                'Infra depósito (€/bus)', min_value=0.0, value=20_000.0,
+                'Infra depósito (€)', min_value=0.0, value=20_000.0,
                 step=1_000.0, key='cf_dep',
             )
         capex_flash = CostCapexFlash(
@@ -242,7 +242,7 @@ if 'flash' in op_results:
             cargador_pantografo_cabecera_eur=fl_pant,
             cargador_pistola_patio_eur=fl_pist,
             subestacion_electrica_eur=fl_sub,
-            infraestructura_deposito_eur_bus=fl_dep,
+            infraestructura_deposito_eur=fl_dep,
         )
 
         st.markdown("#### OPEX")
@@ -308,7 +308,7 @@ if 'opportunity' in op_results:
             )
         with c3:
             op_dep_c = st.number_input(
-                'Infra depósito (€/bus)', min_value=0.0, value=20_000.0,
+                'Infra depósito (€)', min_value=0.0, value=20_000.0,
                 step=1_000.0, key='co_dep',
             )
         capex_opportunity = CostCapexOpportunity(
@@ -316,7 +316,7 @@ if 'opportunity' in op_results:
             cargador_oportunidad_cabecera_eur=op_carg,
             cargador_pistola_patio_eur=op_pist,
             subestacion_electrica_eur=op_sub,
-            infraestructura_deposito_eur_bus=op_dep_c,
+            infraestructura_deposito_eur=op_dep_c,
         )
 
         st.markdown("#### OPEX")
@@ -374,13 +374,13 @@ if 'hydrogen' in op_results:
             )
         with c3:
             h_dep = st.number_input(
-                'Infra depósito (€/bus)', min_value=0.0, value=20_000.0,
+                'Infra depósito (€)', min_value=0.0, value=20_000.0,
                 step=1_000.0, key='ch_dep',
             )
         capex_hydrogen = CostCapexHydrogen(
             vehiculo_eur=h_vehiculo,
             estacion_hidrogeno_eur=h_estacion,
-            infraestructura_deposito_eur_bus=h_dep,
+            infraestructura_deposito_eur=h_dep,
         )
 
         st.markdown("#### OPEX")
@@ -558,12 +558,13 @@ with chart_tabs[1]:
     capex_components = [
         ('Vehículos', 'vehiculos'),
         ('Carg. cabecera', 'cargadores_cabecera'),
+        ('Carg. trazado', 'cargadores_trazado'),
         ('Carg. patio', 'cargadores_patio'),
         ('Subestación', 'subestacion'),
         ('Estación H₂', 'estacion_h2'),
         ('Infra depósito', 'infra_deposito'),
     ]
-    comp_colors = ["#9d52f3", '#007AFF', '#34C759', "#FF0055", "#DEDC52", '#5856D6']
+    comp_colors = ["#9d52f3", '#007AFF', '#00BCD4', '#34C759', "#FF0055", "#DEDC52", '#5856D6']
 
     techs_short = []
     for key in cost_results:
@@ -759,6 +760,7 @@ for key, cdata in cost_results.items():
         'Flota': flota,
         'CAPEX Vehículos (€)': capex['vehiculos'],
         'CAPEX Carg. cabecera (€)': capex['cargadores_cabecera'],
+        'CAPEX Carg. trazado (€)': capex.get('cargadores_trazado', 0.0),
         'CAPEX Carg. patio (€)': capex['cargadores_patio'],
         'CAPEX Subestación (€)': capex['subestacion'],
         'CAPEX Est. H₂ (€)': capex['estacion_h2'],
